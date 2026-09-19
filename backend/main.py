@@ -1,18 +1,29 @@
 #main work is handling request
 
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from backend.database import get_connection
 from datetime import datetime, timedelta
 from pwdlib import PasswordHash
 import jwt
 import os
+import secrets
+import hashlib
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
 app = FastAPI() #Main object
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 password_hash = PasswordHash.recommended()
 
@@ -1367,6 +1378,7 @@ def login(
         }
 
     user_id = user[0]
+
     stored_password_hash = user[1]
     user_status = user[2]
 
@@ -1458,3 +1470,131 @@ def login(
         "roles": roles
     }
 
+@app.post("/forgot-password")
+def forgot_password(email: str):
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    # Check whether user exists
+    cursor.execute("""
+        SELECT user_id
+        FROM users
+        WHERE email = %s;
+    """, (email,))
+
+    user = cursor.fetchone()
+
+    if user is None:
+        cursor.close()
+        connection.close()
+
+        return {
+            "message": "If this email is registered, a password reset link can be generated."
+        }
+
+    user_id = user[0]
+
+    # Generate a secure random reset token
+    reset_token = secrets.token_urlsafe(32)
+
+    # Store only the hash of the token in the database
+    token_hash = hashlib.sha256(
+        reset_token.encode()
+    ).hexdigest()
+
+    # Token will expire after 30 minutes
+    expires_at = datetime.now() + timedelta(minutes=30)
+
+    # Save reset token in database
+    cursor.execute("""
+        INSERT INTO password_reset_tokens
+        (
+            user_id,
+            token_hash,
+            expires_at
+        )
+        VALUES
+        (
+            %s,
+            %s,
+            %s
+        );
+    """, (
+        user_id,
+        token_hash,
+        expires_at
+    ))
+
+    connection.commit()
+
+    cursor.close()
+    connection.close()
+
+    return {
+    "message": "User found. Password reset process can continue.",
+    "user_id": user_id,
+    "reset_token": reset_token
+    }  
+
+
+@app.post("/reset-password")
+def reset_password(
+    token: str,
+    new_password: str
+):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    token_hash = hashlib.sha256(
+        token.encode()
+    ).hexdigest()
+
+    cursor.execute("""
+        SELECT id, user_id
+        FROM password_reset_tokens
+        WHERE token_hash = %s
+          AND used = FALSE
+          AND expires_at > CURRENT_TIMESTAMP;
+    """, (token_hash,))
+
+    reset_record = cursor.fetchone()
+
+    if reset_record is None:
+        cursor.close()
+        connection.close()
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired reset token."
+        )
+
+    reset_id = reset_record[0]
+    user_id = reset_record[1]
+
+    new_password_hash = password_hash.hash(new_password)
+
+    cursor.execute("""
+        UPDATE users
+        SET password_hash = %s
+        WHERE user_id = %s;
+    """, (
+        new_password_hash,
+        user_id
+    ))
+
+    cursor.execute("""
+        UPDATE password_reset_tokens
+        SET used = TRUE
+        WHERE id = %s;
+    """, (reset_id,))
+
+    connection.commit()
+
+    cursor.close()
+    connection.close()
+
+    return {
+        "message": "Password reset successful."
+        
+    }
