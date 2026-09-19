@@ -3,7 +3,8 @@
 Backend: `http://127.0.0.1:8000`  
 Swagger: `http://127.0.0.1:8000/docs`
 
-React talks to FastAPI only. React must NOT connect directly to PostgreSQL.
+The HTML/CSS/JavaScript frontend communicates with FastAPI APIs only.
+The frontend must NOT connect directly to PostgreSQL.
 
 ## Authentication
 `POST /login`
