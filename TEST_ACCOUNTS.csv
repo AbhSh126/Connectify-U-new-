@@ -1,0 +1,4 @@
+account_name,email,role,roll_no,password
+Frontend Test Student,connectifyu.frontend.test@gmail.com,student,TEST003,SHARE_SEPARATELY
+Admin Test Account,admin@connectifyu.com,admin,,SHARE_SEPARATELY
+Organizer Test Account,teststudent@connectifyu.com,"student,organizer",,SHARE_SEPARATELY
