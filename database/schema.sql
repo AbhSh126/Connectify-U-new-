@@ -1,24 +1,41 @@
 
 -- CONNECTIFYU DATABASE SCHEMA
 
-
+-- This file creates the complete database structure for
+-- the ConnectifyU backend.
+--
+-- Run this file on a fresh PostgreSQL database.
+-
 -- 1. USERS
+
+
 CREATE TABLE users (
     user_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
     email VARCHAR(100) NOT NULL UNIQUE,
+
     password_hash VARCHAR(255) NOT NULL,
+
     status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
         CHECK (status IN ('ACTIVE', 'INACTIVE'))
 );
 
 
+
 -- 2. STUDENTS
+
+
 CREATE TABLE students (
     student_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
     user_id INTEGER NOT NULL UNIQUE,
+
     name VARCHAR(100) NOT NULL,
+
     roll_no VARCHAR(50) NOT NULL UNIQUE,
+
     branch VARCHAR(100) NOT NULL,
+
     year INTEGER NOT NULL
         CHECK (year BETWEEN 1 AND 4),
 
@@ -29,14 +46,26 @@ CREATE TABLE students (
 );
 
 
+
 -- 3. ORGANIZERS
+
+
 CREATE TABLE organizers (
     organizer_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
     user_id INTEGER NOT NULL UNIQUE,
+
     organizer_type VARCHAR(20) NOT NULL
         CHECK (organizer_type IN ('STUDENT', 'FACULTY', 'EXTERNAL')),
+
     organization VARCHAR(150),
+
     designation VARCHAR(100),
+
+    -- Organizer account can be ACTIVE or SUSPENDED.
+    -- Suspension does not delete the organizer record.
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+        CHECK (status IN ('ACTIVE', 'SUSPENDED')),
 
     CONSTRAINT fk_organizer_user
         FOREIGN KEY (user_id)
@@ -45,9 +74,13 @@ CREATE TABLE organizers (
 );
 
 
+
 -- 4. ADMINS
+
+
 CREATE TABLE admins (
     admin_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
     user_id INTEGER NOT NULL UNIQUE,
 
     CONSTRAINT fk_admin_user
@@ -57,21 +90,41 @@ CREATE TABLE admins (
 );
 
 
+
 -- 5. EVENTS
+
+
 CREATE TABLE events (
     event_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
     organizer_id INTEGER NOT NULL,
+
     title VARCHAR(200) NOT NULL,
+
     description TEXT NOT NULL,
+
     venue VARCHAR(200) NOT NULL,
+
     event_date DATE NOT NULL,
+
     event_time TIME NOT NULL,
+
     duration_minutes INTEGER NOT NULL
         CHECK (duration_minutes > 0),
+
     category VARCHAR(100) NOT NULL,
+
     registration_deadline TIMESTAMP NOT NULL,
+
     status VARCHAR(20) NOT NULL DEFAULT 'PUBLISHED'
-        CHECK (status IN ('DRAFT', 'PUBLISHED', 'CANCELLED', 'COMPLETED')),
+        CHECK (
+            status IN (
+                'DRAFT',
+                'PUBLISHED',
+                'CANCELLED',
+                'COMPLETED'
+            )
+        ),
 
     CONSTRAINT fk_event_organizer
         FOREIGN KEY (organizer_id)
@@ -80,20 +133,33 @@ CREATE TABLE events (
 );
 
 
+
 -- 6. SPEAKERS
+
+
 CREATE TABLE speakers (
     speaker_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
     name VARCHAR(150) NOT NULL,
+
     designation VARCHAR(100),
+
     organization VARCHAR(150),
+
     bio TEXT
 );
 
 
+-- ============================================================
 -- 7. EVENT_SPEAKERS
--- Junction table for Event <-> Speaker many-to-many relationship
+-- ============================================================
+-- Junction table for the many-to-many relationship
+-- between Events and Speakers.
+-- ============================================================
+
 CREATE TABLE event_speakers (
     event_id INTEGER NOT NULL,
+
     speaker_id INTEGER NOT NULL,
 
     PRIMARY KEY (event_id, speaker_id),
@@ -110,12 +176,19 @@ CREATE TABLE event_speakers (
 );
 
 
+
 -- 8. REGISTRATIONS
+
+
 CREATE TABLE registrations (
     registration_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
     student_id INTEGER NOT NULL,
+
     event_id INTEGER NOT NULL,
+
     registered_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
     status VARCHAR(20) NOT NULL DEFAULT 'REGISTERED'
         CHECK (status IN ('REGISTERED', 'CANCELLED')),
 
@@ -129,16 +202,73 @@ CREATE TABLE registrations (
         REFERENCES events(event_id)
         ON DELETE CASCADE,
 
+    -- Prevents duplicate registration for the same
+    -- student and event.
     CONSTRAINT unique_student_event
         UNIQUE (student_id, event_id)
 );
 
+
+-- ============================================================
+-- 9. ORGANIZER_REQUESTS
+-- ============================================================
+-- Stores requests from users who want organizer access.
+--
+-- Workflow:
+--
+-- User requests organizer access
+--          ↓
+-- Request stored here
+--          ↓
+-- Admin approves/rejects
+--          ↓
+-- If approved, organizer profile is created.
+-- ============================================================
+
+CREATE TABLE organizer_requests (
+    request_id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
+    user_id INTEGER NOT NULL,
+
+    reason TEXT,
+
+    organization VARCHAR(150),
+
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+        CHECK (
+            status IN (
+                'PENDING',
+                'APPROVED',
+                'REJECTED'
+            )
+        ),
+
+    requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    reviewed_at TIMESTAMP,
+
+    CONSTRAINT fk_organizer_request_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(user_id)
+        ON DELETE CASCADE
+);
+
+
+-- ============================================================
+-- 10. PASSWORD_RESET_TOKENS
+-- ============================================================
+
 CREATE TABLE password_reset_tokens (
     id SERIAL PRIMARY KEY,
-    user_id INT NOT NULL,
+
+    user_id INTEGER NOT NULL,
+
     token_hash VARCHAR(255) NOT NULL,
+
     expires_at TIMESTAMP NOT NULL,
+
     used BOOLEAN DEFAULT FALSE,
+
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT fk_password_reset_user
@@ -146,3 +276,5 @@ CREATE TABLE password_reset_tokens (
         REFERENCES users(user_id)
         ON DELETE CASCADE
 );
+
+

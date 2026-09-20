@@ -1,6 +1,7 @@
 #main work is handling request
 
 from fastapi import FastAPI, Depends, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from backend.database import get_connection
@@ -327,7 +328,7 @@ def get_current_organizer(
     cursor = connection.cursor()
 
     cursor.execute("""
-        SELECT organizer_id
+        SELECT organizer_id, status
         FROM organizers
         WHERE user_id = %s;
     """, (current_user["user_id"],))
@@ -343,7 +344,92 @@ def get_current_organizer(
             detail="Organizer profile not found"
         )
 
-    return organizer[0]
+    organizer_id = organizer[0]
+    status = organizer[1]
+
+    if status != "ACTIVE":
+        raise HTTPException(
+            status_code=403,
+            detail="Organizer account is suspended"
+        )
+
+    return organizer_id
+
+# ADMIN — SUSPEND ORGANIZER
+
+
+@app.post("/admin/organizers/{organizer_id}/suspend")
+def suspend_organizer(
+    organizer_id: int,
+    current_user = Depends(require_admin)
+):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        UPDATE organizers
+        SET status = 'SUSPENDED'
+        WHERE organizer_id = %s
+        RETURNING organizer_id, status;
+    """, (organizer_id,))
+
+    organizer = cursor.fetchone()
+
+    if organizer is None:
+        cursor.close()
+        connection.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Organizer not found"
+        )
+
+    connection.commit()
+
+    cursor.close()
+    connection.close()
+
+    return {
+        "message": "Organizer suspended successfully",
+        "organizer_id": organizer[0],
+        "status": organizer[1]
+    }
+
+
+@app.post("/admin/organizers/{organizer_id}/reactivate")
+def reactivate_organizer(
+    organizer_id: int,
+    current_user = Depends(require_admin)
+):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        UPDATE organizers
+        SET status = 'ACTIVE'
+        WHERE organizer_id = %s
+        RETURNING organizer_id, status;
+    """, (organizer_id,))
+
+    organizer = cursor.fetchone()
+
+    if organizer is None:
+        cursor.close()
+        connection.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Organizer not found"
+        )
+
+    connection.commit()
+
+    cursor.close()
+    connection.close()
+
+    return {
+        "message": "Organizer reactivated successfully",
+        "organizer_id": organizer[0],
+        "status": organizer[1]
+    }
 
 @app.get("/organizer-id-test")
 def organizer_id_test(
@@ -527,12 +613,18 @@ def get_event(event_id: int):
         "status": event[10]
     }
 
+
 @app.post("/registrations")
 def register_student(
     event_id: int,
-    student_id = Depends(get_current_student)
+    current_user = Depends(get_current_user)
 ):
-
+    if "admin" in current_user.get("roles", []):
+        raise HTTPException(
+            status_code=403,
+            detail="Admins cannot register for events"
+        )
+    student_id = get_current_student(current_user)
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -1103,7 +1195,8 @@ def update_event(
     event_date: str,
     event_time: str,
     duration_minutes: int,
-    category: str
+    category: str,
+    organizer_id = Depends(get_current_organizer)
 ):
 
     connection = get_connection()
@@ -1111,7 +1204,7 @@ def update_event(
 
     # Check whether event exists
     cursor.execute("""
-        SELECT event_id
+        SELECT event_id, organizer_id
         FROM events
         WHERE event_id = %s;
     """, (event_id,))
@@ -1122,9 +1215,20 @@ def update_event(
         cursor.close()
         connection.close()
 
-        return {
-            "error": "Event not found"
-        }
+        raise HTTPException(
+            status_code=404,
+            detail="Event not found"
+        )
+
+    # Check whether the logged-in organizer owns the event
+    if event[1] != organizer_id:
+        cursor.close()
+        connection.close()
+
+        raise HTTPException(
+            status_code=403,
+            detail="You do not own this event"
+        )
 
     # Combine updated event date and time
     event_start = datetime.strptime(
@@ -1237,15 +1341,24 @@ def delete_event(
         "status": "CANCELLED"
     }
 
-@app.post("/signup")
-def signup(
-    email: str,
-    password: str,
-    name: str,
-    roll_no: str,
-    branch: str,
+class StudentSignup(BaseModel):
+    email: str
+    password: str
+    name: str
+    roll_no: str
+    branch: str
     year: int
-):
+
+
+class OrganizerSignup(BaseModel):
+    email: str
+    password: str
+    name: str
+    organization: str
+    reason: str
+
+@app.post("/signup/student")
+def signup_student(data: StudentSignup):
 
     connection = get_connection()
     cursor = connection.cursor()
@@ -1255,7 +1368,7 @@ def signup(
         SELECT user_id
         FROM users
         WHERE email = %s;
-    """, (email,))
+    """, (data.email,))
 
     existing_user = cursor.fetchone()
 
@@ -1263,12 +1376,13 @@ def signup(
         cursor.close()
         connection.close()
 
-        return {
-            "error": "Email already registered"
-        }
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered"
+        )
 
-    # Hash the password before storing it
-    hashed_password = password_hash.hash(password)
+    # Hash password
+    hashed_password = password_hash.hash(data.password)
 
     try:
 
@@ -1286,7 +1400,7 @@ def signup(
             )
             RETURNING user_id;
         """, (
-            email,
+            data.email,
             hashed_password
         ))
 
@@ -1313,27 +1427,25 @@ def signup(
             RETURNING student_id;
         """, (
             user_id,
-            name,
-            roll_no,
-            branch,
-            year
+            data.name,
+            data.roll_no,
+            data.branch,
+            data.year
         ))
 
         student_id = cursor.fetchone()[0]
 
-        # Save both operations permanently
         connection.commit()
 
     except Exception as error:
 
-        # Undo everything if something went wrong
         connection.rollback()
 
         cursor.close()
         connection.close()
 
         return {
-            "error": "Signup failed",
+            "error": "Student signup failed",
             "details": str(error)
         }
 
@@ -1342,9 +1454,114 @@ def signup(
 
     return {
         "message": "Student account created successfully",
+        "signup_type": "student",
         "user_id": user_id,
         "student_id": student_id,
-        "email": email
+        "email": data.email
+    }
+
+
+@app.post("/signup/organizer")
+def signup_organizer(data: OrganizerSignup):
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    # Check whether email already exists
+    cursor.execute("""
+        SELECT user_id
+        FROM users
+        WHERE email = %s;
+    """, (data.email,))
+
+    existing_user = cursor.fetchone()
+
+    if existing_user is not None:
+        cursor.close()
+        connection.close()
+
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered"
+        )
+
+    # Hash password
+    hashed_password = password_hash.hash(data.password)
+
+    try:
+
+        # Create user account
+        cursor.execute("""
+            INSERT INTO users
+            (
+                email,
+                password_hash
+            )
+            VALUES
+            (
+                %s,
+                %s
+            )
+            RETURNING user_id;
+        """, (
+            data.email,
+            hashed_password
+        ))
+
+        user_id = cursor.fetchone()[0]
+
+        # Create organizer request
+        # IMPORTANT:
+        # This does NOT create an organizers row.
+        # Organizer access will be granted only after admin approval.
+        cursor.execute("""
+            INSERT INTO organizer_requests
+            (
+                user_id,
+                reason,
+                organization,
+                status
+            )
+            VALUES
+            (
+                %s,
+                %s,
+                %s,
+                'PENDING'
+            )
+            RETURNING request_id;
+        """, (
+            user_id,
+            data.reason,
+            data.organization
+        ))
+
+        request_id = cursor.fetchone()[0]
+
+        connection.commit()
+
+    except Exception as error:
+
+        connection.rollback()
+
+        cursor.close()
+        connection.close()
+
+        return {
+            "error": "Organizer signup failed",
+            "details": str(error)
+        }
+
+    cursor.close()
+    connection.close()
+
+    return {
+        "message": "Organizer request submitted successfully",
+        "signup_type": "organizer",
+        "user_id": user_id,
+        "request_id": request_id,
+        "email": data.email,
+        "status": "PENDING"
     }
 
 @app.post("/login")
@@ -1418,7 +1635,8 @@ def login(
     cursor.execute("""
         SELECT organizer_id
         FROM organizers
-        WHERE user_id = %s;
+        WHERE user_id = %s
+          AND status = 'ACTIVE';
     """, (user_id,))
 
     organizer = cursor.fetchone()
